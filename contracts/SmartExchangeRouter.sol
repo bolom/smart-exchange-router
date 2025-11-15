@@ -83,14 +83,14 @@ contract SmartExchangeRouter is ReentrancyGuard {
 
   constructor(
     address _v2Router,
-    address _v1Foctroy,
+    address _v1Factory,
     address _psmUsdd,
     address _v3Router,
     address _wtrx
   ) public {
     owner = msg.sender;
     admin = msg.sender;
-    v1Factory = _v1Foctroy;
+    v1Factory = _v1Factory;
     v2Router = _v2Router;
     v3Router = _v3Router;
     psmUsdd = _psmUsdd;
@@ -315,6 +315,105 @@ contract SmartExchangeRouter is ReentrancyGuard {
                   "Global amountOutMin not satisfied.");
     assert(context.path_i == path.length);
     emit SwapExactTokensForTokens(msg.sender, data.amountIn, amountsOut);
+  }
+
+  /**
+   * @dev Exact output swap function - specify exact amount of output token desired
+   * @param path Token addresses in reverse order (output token first, input token last)
+   * @param fees Pool fees for each hop (must match path length)
+   * @param amountOut Exact amount of output token desired
+   * @param amountInMaximum Maximum amount of input token willing to spend
+   * @param to Address where output token transfers to
+   * @param deadline Time after which this transaction can no longer be executed
+   * @return amountIn Actual amount of input token spent
+   * @notice Only supports V3 pools for exact output swaps
+   * @notice Path is REVERSED for exact output: [tokenOut, tokenIn] not [tokenIn, tokenOut]
+   */
+  function swapExactOutput(
+    address[] calldata path,
+    uint24[] calldata fees,
+    uint256 amountOut,
+    uint256 amountInMaximum,
+    address to,
+    uint256 deadline
+  ) external virtual nonReentrant payable returns(uint256 amountIn) {
+    require(path.length >= 2, "INVALID_PATH");
+    require(fees.length == path.length - 1, "INVALID_FEES");
+    require(amountOut > 0, "INVALID_AMOUNT_OUT");
+    require(amountInMaximum > 0, "INVALID_AMOUNT_IN_MAX");
+
+    // For exact output, path is reversed: [tokenOut, ..., tokenIn]
+    address tokenIn = path[path.length - 1];
+    address tokenOut = path[0];
+
+    // Determine if this is a native TRX swap by checking msg.value
+    // For TRX swaps, path should contain WTRX but we send TRX as msg.value
+    bool isNativeTRX = msg.value > 0;
+
+    // Handle input token transfer (TRX or TRC20)
+    if(isNativeTRX){
+      // Native TRX input
+      require(msg.value >= amountInMaximum, "INSUFFICIENT_TRX");
+      require(tokenIn == WTRX, "Invalid path for TRX swap");
+    } else {
+      // TRC20 input - pull tokens from sender
+      uint256 balanceBefore = erc20(tokenIn).balanceOf(address(this));
+      require(TransferHelper.safeTransferFrom(tokenIn, msg.sender, address(this), amountInMaximum),
+              "Transfer failed");
+      uint256 balanceAfter = erc20(tokenIn).balanceOf(address(this));
+      require(balanceAfter - balanceBefore == amountInMaximum, "Fee-on-transfer not supported");
+
+      // Approve V3 router to spend input tokens
+      _approveToken(tokenIn, v3Router);
+    }
+
+    // Create V3 exact output params
+    v3.ExactOutputParams memory outputParams;
+    outputParams.path = V3Encode.encodePath(path, fees);
+    outputParams.recipient = to;
+    outputParams.deadline = deadline;
+    outputParams.amountOut = amountOut;
+    outputParams.amountInMaximum = amountInMaximum;
+
+    // Execute exact output swap
+    if(isNativeTRX){
+      // TRX input - router will wrap to WTRX
+      amountIn = v3(v3Router).exactOutput{value: msg.value}(outputParams);
+
+      // Verify we didn't spend more than maximum
+      require(amountIn <= msg.value, "Amount exceeded maximum");
+
+      // Retrieve unused TRX from V3 router
+      v3(v3Router).refundETH();
+
+      // Refund unused TRX to the original sender
+      uint256 refundAmount = address(this).balance;
+      if (refundAmount > 0) {
+          (bool success, ) = payable(msg.sender).call{value: refundAmount}("");
+          require(success, "TRX refund failed");
+      }
+    } else {
+      // TRC20 input
+      amountIn = v3(v3Router).exactOutput(outputParams);
+
+      // Refund any remaining tokens to sender
+      uint256 remainingBalance = erc20(tokenIn).balanceOf(address(this));
+      if (remainingBalance > 0) {
+        TransferHelper.safeTransfer(tokenIn, msg.sender, remainingBalance);
+      }
+    }
+
+    emit SwapExactTokensForTokens(msg.sender, amountIn, _buildAmountsArray(amountIn, amountOut));
+  }
+
+  /**
+   * Helper function to build amounts array for event
+   */
+  function _buildAmountsArray(uint256 amountIn, uint256 amountOut)
+      internal pure returns(uint256[] memory amounts) {
+    amounts = new uint256[](2);
+    amounts[0] = amountIn;
+    amounts[1] = amountOut;
   }
 
   /**

@@ -1,25 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.6.8 <0.9.0;
 
-contract RouterV1Mock {
-    mapping(address => address) public exchanges;
+contract ExchangerV1Mock {
     mapping(address => uint256[]) private tokenOutValues;
     uint256 public defaultTokenOut = 1;
-    address[] public supportedTokens;
 
     constructor() public payable {
-    }
-
-    function setUp(address[] memory tokens, uint256 defaultOut) public {
-        for (uint i = 0; i < tokens.length; i++) {
-            exchanges[tokens[i]] = address(this);
-        }
-        supportedTokens = tokens;
-        defaultTokenOut = defaultOut;
-    }
-
-    function getExchange(address token) public view returns (address) {
-        return exchanges[token];
     }
 
     function setTokenOut(uint256[] memory amounts) public {
@@ -27,12 +13,7 @@ contract RouterV1Mock {
     }
 
     function getTokenOut(address sender) public view returns (uint256[] memory) {
-        uint256[] memory amounts = tokenOutValues[sender];
-        if (amounts.length == 0) {
-            amounts = new uint256[](1);
-            amounts[0] = defaultTokenOut;
-        }
-        return amounts;
+        return tokenOutValues[sender];
     }
 
     // Mock implementation of V1 exchange functions
@@ -42,6 +23,9 @@ contract RouterV1Mock {
         address recipient
     ) public payable returns (uint256 tokensBought) {
         uint256[] memory amounts = getTokenOut(msg.sender);
+        if (amounts.length == 0) {
+            return defaultTokenOut;
+        }
         require(amounts.length > 0, "No amounts set");
         uint256 amount = amounts[0];
         require(amount > 0, "Amount must be greater than 0");
@@ -55,6 +39,9 @@ contract RouterV1Mock {
         address recipient
     ) public returns (uint256 ethBought) {
         uint256[] memory amounts = getTokenOut(msg.sender);
+        if (amounts.length == 0) {
+            return defaultTokenOut;
+        }
         require(amounts.length > 0, "No amounts set");
         uint256 amount = amounts[0];
         require(amount > 0, "Amount must be greater than 0");
@@ -70,6 +57,9 @@ contract RouterV1Mock {
         address tokenAddr
     ) public returns (uint256 tokensBought) {
         uint256[] memory amounts = getTokenOut(msg.sender);
+        if (amounts.length == 0) {
+            return defaultTokenOut;
+        }
         require(amounts.length > 0, "No amounts set");
         uint256 amount = amounts[0];
         require(amount > 0, "Amount must be greater than 0");

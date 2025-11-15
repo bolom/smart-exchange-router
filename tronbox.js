@@ -1,3 +1,4 @@
+
 const port = process.env.HOST_PORT || 9090;
 
 module.exports = {
@@ -11,7 +12,7 @@ module.exports = {
       network_id: '1',
     },
     nile: {
-      privateKey: process.env.PRIVATE_KEY_NILE,
+      privateKey: 'eff6377291c1ae1cf7b2e8e5f3f585eac2e8bf2fee45b7d057496822555cdad9',
       userFeePercentage: 100,
       feeLimit: 10000 * 1e6,
       fullHost: 'https://nile.trongrid.io',

@@ -1,24 +1,23 @@
-require('chai')
-  .use(require('bn-chai')(web3.utils.BN))
-  .use(require('chai-as-promised'))
-  .should();
-
-const a = require('web3-utils');
-const { toBN } = a;
-console.log("---------------------",a);
 const { takeSnapshot, revertSnapshot } = require('./ganacheHelper');
 
 const SmartExchangeRouterTest = artifacts.require(
   './SmartExchangeRouterTest.sol',
 );
-const TRC20Mock = artifacts.require('./TRC20Mock.sol');
-const PoolStableMock = artifacts.require('./PoolStableMock.sol');
-const ExchangerV1Mock = artifacts.require('./ExchangerV1Mock.sol');
-const RouterV1Mock = artifacts.require('./RouterV1Mock.sol');
-const RouterV2Mock = artifacts.require('./RouterV2Mock.sol');
-const RouterV3Mock = artifacts.require('./RouterV3Mock.sol');
+const TRC20Mock = artifacts.require('./mocks/TRC20Mock.sol');
+const PoolStableMock = artifacts.require('./mocks/PoolStableMock.sol');
+const ExchangerV1Mock = artifacts.require('./mocks/ExchangerV1Mock.sol');
+const RouterV1Mock = artifacts.require('./mocks/RouterV1Mock.sol');
+const RouterV2Mock = artifacts.require('./mocks/RouterV2Mock.sol');
+const RouterV3Mock = artifacts.require('./mocks/RouterV3Mock.sol');
 const wethMock = artifacts.require("./tokens/WETH9.sol");
 contract('SmartExchangeRouterTest', (accounts) => {
+  const BN = web3.utils.BN;
+  const { toBN } = web3.utils;
+  const chai = require('chai');
+  chai.use(require('bn-chai')(BN))
+      .use(require('chai-as-promised'))
+      .should();
+
   // only-test let gasPrice;
   let old3pool;
   let usdcpool;
@@ -1197,6 +1196,213 @@ contract('SmartExchangeRouterTest', (accounts) => {
   //     ).to.have.ordered.members(expectOut);
   //   });
   // });
+
+  describe('#swapExactOutput', () => {
+    it('should fail with invalid path length', async () => {
+      await exchangeRouter
+        .swapExactOutput(
+          [usdc.address], // path with only 1 token
+          [3000], // fees array
+          web3.utils.toWei(toBN(1), 'ether'), // amountOut
+          web3.utils.toWei(toBN(2), 'ether'), // amountInMaximum
+          receiver,
+          infiniteTime
+        )
+        .should.be.rejectedWith('INVALID_PATH');
+    });
+
+    it('should fail with mismatched fees and path lengths', async () => {
+      await exchangeRouter
+        .swapExactOutput(
+          [usdc.address, usdj.address, tusd.address], // path with 3 tokens
+          [3000, 500], // fees array with only 2 elements
+          web3.utils.toWei(toBN(1), 'ether'), // amountOut
+          web3.utils.toWei(toBN(2), 'ether'), // amountInMaximum
+          receiver,
+          infiniteTime
+        )
+        .should.be.rejectedWith('INVALID_FEES');
+    });
+
+    it('should fail with zero amountOut', async () => {
+      await exchangeRouter
+        .swapExactOutput(
+          [usdc.address, usdj.address], // path
+          [3000, 500], // fees
+          0, // amountOut (zero)
+          web3.utils.toWei(toBN(2), 'ether'), // amountInMaximum
+          receiver,
+          infiniteTime
+        )
+        .should.be.rejectedWith('INVALID_AMOUNT_OUT');
+    });
+
+    it('should fail with zero amountInMaximum', async () => {
+      await exchangeRouter
+        .swapExactOutput(
+          [usdc.address, usdj.address], // path
+          [3000, 500], // fees
+          web3.utils.toWei(toBN(1), 'ether'), // amountOut
+          0, // amountInMaximum (zero)
+          receiver,
+          infiniteTime
+        )
+        .should.be.rejectedWith('INVALID_AMOUNT_IN_MAX');
+    });
+
+    it('should fail with insufficient TRX for native TRX swap', async () => {
+      const amountOut = web3.utils.toWei(toBN(1), 'ether');
+      const amountInMaximum = web3.utils.toWei(toBN(2), 'ether');
+      
+      await exchangeRouter
+        .swapExactOutput(
+          [usdj.address, weth.address], // path: WETH -> USDT (TRX swap)
+          [3000, 500], // fees
+          amountOut, // amountOut
+          amountInMaximum, // amountInMaximum
+          receiver,
+          infiniteTime,
+          { value: web3.utils.toWei(toBN(1), 'ether') } // Less than amountInMaximum
+        )
+        .should.be.rejectedWith('INSUFFICIENT_TRX');
+    });
+
+    it('should fail with invalid path for TRX swap', async () => {
+      const amountOut = web3.utils.toWei(toBN(1), 'ether');
+      const amountInMaximum = web3.utils.toWei(toBN(2), 'ether');
+      
+      await exchangeRouter
+        .swapExactOutput(
+          [usdj.address, usdc.address], // Invalid path (not containing WTRX)
+          [3000, 500], // fees
+          amountOut, // amountOut
+          amountInMaximum, // amountInMaximum
+          receiver,
+          infiniteTime,
+          { value: amountInMaximum } // TRX value
+        )
+        .should.be.rejectedWith('Invalid path for TRX swap');
+    });
+
+    it('should perform token to token swap with V3 router (success case)', async () => {
+      // Mint tokens to sender for the swap
+      const amountInMaximum = 1000000;
+      const amountOut = 500000;
+      await usdc.mint(sender, amountInMaximum);
+      
+      // Approve the router to spend sender's tokens
+      await usdc.approve(exchangeRouter.address, amountInMaximum, { from: sender });
+      
+      // Set up V3 router mock to return appropriate amounts
+      // For exactOutput, V3 router should return the actual amountIn used
+      await v3Router.setTokenOut([amountInMaximum - 100000]); // Return actual amount spent
+      
+      const balanceBefore = [
+        await usdc.balanceOf(sender),
+        await usdj.balanceOf(receiver)
+      ];
+      
+      // Perform the swap: USDC -> USDT (we want to get 500000 USDT, spending max 1000000 USDC)
+      const result = await exchangeRouter.swapExactOutput(
+        [usdj.address, usdc.address], // Path: [tokenOut, tokenIn] - reversed for exactOutput
+        [3000, 500], // Fees
+        amountOut, // exact amount out we want
+        amountInMaximum, // max amount we're willing to spend
+        receiver,
+        infiniteTime,
+        { from: sender }
+      );
+      
+      const balanceAfter = [
+        await usdc.balanceOf(sender),
+        await usdj.balanceOf(receiver)
+      ];
+      
+      // Check that the swap happened correctly
+      // The sender should have spent some USDC (actual amount depends on slippage)
+      expect(balanceAfter[0].sub(balanceBefore[0]).toNumber()).to.be.lessThan(0);
+      
+      // The receiver should have received the exact amount of USDT
+      expect(balanceAfter[1].sub(balanceBefore[1]).toNumber()).to.equal(amountOut);
+      
+      // Check for events
+      const event = result.logs.find(log => log.event === 'SwapExactTokensForTokens');
+      expect(event).to.not.be.undefined;
+      expect(event.args.buyer).to.equal(sender);
+    });
+
+    it('should refund unused tokens in token to token swap', async () => {
+      // Mint tokens to sender for the swap
+      const amountInMaximum = 1000000;
+      const amountOut = 500000;
+      await usdc.mint(sender, amountInMaximum);
+      
+      // Approve the router to spend sender's tokens
+      await usdc.approve(exchangeRouter.address, amountInMaximum, { from: sender });
+      
+      // Set up V3 router mock to return less than the maximum (so there's a refund)
+      const actualAmountIn = 800000; // V3 router will only use 800000
+      await v3Router.setTokenOut([actualAmountIn]);
+      
+      const senderBalanceBefore = await usdc.balanceOf(sender);
+      const routerBalanceBefore = await usdc.balanceOf(exchangeRouter.address);
+      
+      // Perform the swap: USDC -> USDT
+      await exchangeRouter.swapExactOutput(
+        [usdj.address, usdc.address], // Path: [tokenOut, tokenIn]
+        [3000, 500], // Fees
+        amountOut, // exact amount out we want
+        amountInMaximum, // max amount we're willing to spend
+        receiver,
+        infiniteTime,
+        { from: sender }
+      );
+      
+      const senderBalanceAfter = await usdc.balanceOf(sender);
+      const routerBalanceAfter = await usdc.balanceOf(exchangeRouter.address);
+      
+      // Check that sender spent actualAmountIn and got refund of (amountInMaximum - actualAmountIn)
+      const expectedRefund = amountInMaximum - actualAmountIn;
+      const actualSpent = senderBalanceBefore.sub(senderBalanceAfter);
+      expect(actualSpent.toNumber()).to.equal(actualAmountIn);
+      
+      // Router balance should be unchanged (since tokens were spent and any refunds processed)
+      expect(routerBalanceAfter.toNumber()).to.equal(routerBalanceBefore.toNumber());
+    });
+
+    it('should perform TRX to token swap with V3 router', async () => {
+      const amountOut = 500000; // Amount of token we want to receive
+      const amountInMaximum = web3.utils.toWei(toBN(2), 'ether'); // Max TRX we're willing to spend
+      
+      // Set up V3 router to return the amount of TRX used
+      await v3Router.setTokenOut([web3.utils.toWei(toBN(1), 'ether')]); // V3 router will use 1 ETH worth
+      
+      const receiverBalanceBefore = await usdj.balanceOf(receiver);
+      const senderBalanceBefore = await web3.eth.getBalance(sender);
+      
+      // Perform the swap: TRX -> USDT (we want 500000 USDT, spending max 2 ETH)
+      const result = await exchangeRouter.swapExactOutput(
+        [usdj.address, weth.address], // Path: [tokenOut, WTRX] - TRX swap
+        [3000, 500], // Fees
+        amountOut, // exact amount out we want
+        amountInMaximum, // max amount we're willing to spend
+        receiver,
+        infiniteTime,
+        { from: sender, value: amountInMaximum } // Send TRX
+      );
+      
+      const receiverBalanceAfter = await usdj.balanceOf(receiver);
+      const senderBalanceAfter = await web3.eth.getBalance(sender);
+      
+      // Check that receiver received exact amount of USDT
+      expect(receiverBalanceAfter.sub(receiverBalanceBefore).toNumber()).to.equal(amountOut);
+      
+      // Check events
+      const event = result.logs.find(log => log.event === 'SwapExactTokensForTokens');
+      expect(event).to.not.be.undefined;
+      expect(event.args.buyer).to.equal(sender);
+    });
+  });
 
   afterEach(async () => {
     await revertSnapshot(snapshotId.result);

@@ -6,11 +6,11 @@ library V3Encode {
     function encodePath(address[] memory path,uint24[] memory fees) internal pure returns (bytes memory ret ){
     for (uint256 i = 0; i < path.length; i++) {
       bytes memory a = AddressTobytes(path[i]);
-      bytes memory u = Uint24ToBytes(fees[i]);
-      
+
       if( i == path.length -1){
         ret = abi.encodePacked(ret,a);
       }else{
+        bytes memory u = Uint24ToBytes(fees[i]);
         ret = abi.encodePacked(ret,a,u);
       }
     }

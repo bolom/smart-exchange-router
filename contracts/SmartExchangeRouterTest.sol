@@ -55,12 +55,12 @@ contract SmartExchangeRouterTest is SmartExchangeRouter {
   constructor(
     address _v2Router,
     address _v3Router,
-    address _v1Foctroy,
+    address _v1Factory,
     address _usdd,
     address _wtrx,
     address _usdt
   ) public SmartExchangeRouter(_v2Router,
-                               _v1Foctroy,
+                               _v1Factory,
                                _usdd,
                                _v3Router,
                                _wtrx) {
@@ -218,6 +218,75 @@ contract SmartExchangeRouterTest is SmartExchangeRouter {
                                     amountIn,
                                     amountsOut);
   }
+
+  function swapExactOutput(
+    address[] calldata path,
+    uint24[] calldata fees,
+    uint256 amountOut,
+    uint256 amountInMaximum,
+    address to,
+    uint256 deadline
+  ) external override nonReentrant payable returns(uint256 amountIn) {
+    require(path.length >= 2, "INVALID_PATH");
+    require(path.length == fees.length, "INVALID_FEES");
+    require(amountOut > 0, "INVALID_AMOUNT_OUT");
+    require(amountInMaximum > 0, "INVALID_AMOUNT_IN_MAX");
+
+    // For exact output, path is reversed: [tokenOut, ..., tokenIn]
+    address tokenIn = path[path.length - 1];
+    address tokenOut = path[0];
+
+    // Determine if this is a native TRX swap by checking msg.value
+    // For TRX swaps, path should contain WTRX but we send TRX as msg.value
+    bool isNativeTRX = msg.value > 0;
+
+    // Handle input token transfer (TRX or TRC20)
+    if(isNativeTRX){
+      // Native TRX input
+      require(msg.value >= amountInMaximum, "INSUFFICIENT_TRX");
+      require(tokenIn == WTRX, "Invalid path for TRX swap");
+    } else {
+      // TRC20 input - pull tokens from sender
+      uint256 balanceBefore = erc20(tokenIn).balanceOf(address(this));
+      require(TransferHelper.safeTransferFrom(tokenIn, msg.sender, address(this), amountInMaximum),
+              "Transfer failed");
+      uint256 balanceAfter = erc20(tokenIn).balanceOf(address(this));
+      require(balanceAfter - balanceBefore == amountInMaximum, "Fee-on-transfer not supported");
+
+      // Approve V3 router to spend input tokens
+      _approveToken(tokenIn, v3Router);
+    }
+
+    // Create V3 exact output params
+    v3.ExactOutputParams memory outputParams;
+    outputParams.path = V3Encode.encodePath(path, fees);
+    outputParams.recipient = to;
+    outputParams.deadline = deadline;
+    outputParams.amountOut = amountOut;
+    outputParams.amountInMaximum = amountInMaximum;
+
+    // Execute exact output swap
+    if(isNativeTRX){
+      // TRX input - router will wrap to WTRX
+      // User sends exact amount from quoter, no refund needed
+      amountIn = v3(v3Router).exactOutput{value: msg.value}(outputParams);
+
+      // Verify we used what we expected
+      require(amountIn == msg.value, "Amount mismatch");
+    } else {
+      // TRC20 input
+      amountIn = v3(v3Router).exactOutput(outputParams);
+
+      // Refund unused input tokens to sender
+      if (amountIn < amountInMaximum) {
+        uint256 refund = amountInMaximum - amountIn;
+        require(TransferHelper.safeTransfer(tokenIn, msg.sender, refund), "Refund failed");
+      }
+    }
+
+    emit SwapExactTokensForTokens(msg.sender, amountIn, _buildAmountsArray(amountIn, amountOut));
+  }
+
   // to override walkaround usdt address issue
   function _tokenSafeTransfer(address token, address to, uint256 value)
       internal override returns(uint256 amountOut) {

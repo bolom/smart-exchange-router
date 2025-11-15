@@ -29,8 +29,7 @@ library TransferHelper {
     }
 
     function safeTransferETH(address to, uint value) internal {
-        (bool success,) = to.call.value(value)(new bytes(0));
-        //(bool success,)  = to.call{value:value}(new bytes(0));
+        (bool success,) = to.call{value:value}(new bytes(0));
         require(success, 'TransferHelper: ETH_TRANSFER_FAILED');
     }
 
@@ -42,6 +41,6 @@ library TransferHelper {
         } else {
             callData = abi.encodePacked(bytes4(keccak256(bytes(signature))), data);
         }
-        (success, returnData) = target.call.value(value)(callData);
+        (success, returnData) = target.call{value:value}(callData);
     }
 }
